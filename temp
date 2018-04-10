@@ -1,0 +1,57 @@
+Soal ini merupakan soal CSAW Qualification CTF 2017 yang saya temukan write-up nya dan kebetulan write-up aslinya juga berbahasa Indonesia. Waktu itu saya tertarik dengan soal ini karena banyak mengajarkan leak-leak-an. Saya juga pertama kali belajar tentang canary melalui soal ini dulu.
+Langsung saja kita checksec.
+asset-checksec
+
+Canary found, NX-enabled, dan... NO PIE. Yeeee mantap. Kalau PIE-nya nyala saya tidak akan mengerjakan ulang soal ini, karena malas. Dengan adanya Partial RELRO, kita bisa meng-eksploit GOT dengan meng-overwrite alamat-alamat di dalam GOT menjadi alamat yang kita inginkan. Tetapi apakah benar eksploitnya GOT Overwrite?
+Coba kita jalankan soalnya.
+asset-run1
+asset-run2
+
+Menu pertama mengijinkan kita menulis sesuatu kedalam program, menu kedua mem-print input kita, dan menu ketiga menutup programnya. Menarik. Harusnya bila ada pilihan untuk mem-print sesuatu, yang patut kita curigakan adalah kemungkinan terjadinya format string. Untuk lebih lanjut, mari kita lihat disassembly-nya.
+asset-func
+
+Karena file keparat ini di-strip, kita tidak bisa melihat nama asli dari fungsi-fungsi yang ada di dalam program. Kita perlu mengecek secara manual untuk menemukan fungsi main yang dipanggil. Atau jika anda adalah seorang 1337 h4ck3r, anda dapat menggunakan gef untuk mencari alamat fungsi main-nya dengan command 'entry-break'.
+asset-entry-break
+
+Kita bisa langsung melihat isi disassembly-nya.
+asset-main
+
+Diatas ada 3 case yang harus kita perhatikan baik-baik. Case 2 mem-print isi dari alamat input kita menggunakan puts(). Fungsi puts() akan mencetak karakter ke stdout sampai null-byte ditemukan. Artinya kita dapat memanipulasi output yang keluar dengan memanipulasi peletakkan null-byte di dalam input kita.
+Case 1 menerima input kita dengan menggunakan fungsi read(). Fungsi read() membaca input kita melalui stdin per karakter sebanyak 0xF8-byte untuk ditampung ke dalam address buf yang berukuran 0xB0-0x08 atau sebanyak 0xA8 atau 168-byte. Buffer Overflow.
+Case ke-3 mem-break program dari loop-nya. Exit.
+
+Nah, karena fungsi read() tidak menaruh null-byte di akhir input, kita dapat menerobos langsung hingga melewati jumlah buffer sampai tepat di depan canary. Karena tidak ada null-byte yang memisahkan antara input dan canary (romantis bngsd), ketika kita masuk ke dalam case ke-2, canary akan ikut ter-print ke dalam stdout karena fungsi puts() akan mem-print tiap karakter sampai ditemukannya null-byte, yang sekarang ada di belakang canary.
+Apabila anda ingat, canary terbentuk dari 7 random byte ditambah 1 byte null terminator di akhir. Dan karena program menggunakan little endian sebagai architecture binary-nya, Least Significant Byte akan diletakkan di depan, sehingga dalam hal ini null-byte akan ada tepat setelah input kita (karena null-byte merupakan bagian dari canary). Oleh karena itu, kita harus merubah null-byte tadi menjadi apapun agar tidak dianggap sebagai titik berhenti oleh fungsi puts().
+Agar simple, kita cukup menaruh '\n' setelah junk kita.
+Canary sudah bocor, se-simple itu.
+
+Mumpung saya ingat, selagi kita belum terlalu jauh, mari kita susun dulu eksploit yang akan kita luncurkan kali ini. Karena kelemahan utamanya adalah Buffer Overflow, payload-nya akan berbentuk seperti ini.
+1. Junk
+2. Canary
+3. Padding
+4. Sesuatu
+
+Untuk me-redirect IP kita sudah mendapatkan canary, sekarang tinggal memilih eksploit apa yang pas. NX-enabled, kita tidak bisa mengeksekusi input kita. Tidak ada fungsi rahasia yang langsung memberikan shell atau flag, jadi tidak cukup hanya memanipulasi IP saja. Tidak ada fungsi printf() yang memungkinkan kita memanggil malloc untuk kemudian dieksploit heap-nya layaknya seorang mahaguru hacker. Pilihan kita hanyalah GOT Overwrite atau ret2libc dan ROP chain.
+Biasanya dalam kebanyakan GOT Overwrite, diperlukan format string agar kita dapat menulis langsung ke dalam bagian .GOT di dalam program. Tetapi karena fungsi yang digunakan cukup terbatas dalam soal ini, sepertinya akan lebih tepat jika kita menggunakan ret2libc (karena diberikan shared object juga).
+
+Sekarang kita tahu bahwa kita dapat melakukan ROP di dalam program. Kita juga tahu bahwa kita ingin melakukan ret2libc untuk mendapatkan shell. Hal yang berikutnya harus kita lakukan adalah me-leak alamat system dari libc.
+Kenapa harus me-leak? Bukannya PIE tidak dinyalakan?
+Apabila anda ingat, soal ini menggunakan shared object sebagai library-nya (tepatnya ketika melakukan #include <stdlib.h>). Memang iya alamat dalam program tidak di randomize, tetapi alamat system yang notabene kita ambil dari dalam libc/shared object berubah, karena jika kita checksec file shared object-nya, PIE dinyalakan.
+Berarti langkah kita berikutnya adalah sebagai berikut:
+1. Leak alamat suatu fungsi dalam libc.
+2. Mencari alamat fungsi yang sama di dalam bagian .GOT.PLT di dalam program.
+3. Mengurangi kedua alamat tersebut untuk mendapatkan base libc address.
+4. Mencari alamat fungsi system() di dalam libc.
+5. Menambahkan alamat tersebut dengan base libc address untuk mendapat alamat asli system() ketika program dijalankan.
+6. Mencari alamat string '/bin/sh' di dalam libc.
+7. Menambahkan alamat tersebut dengan base libc address untuk mendapat alamat asli string ketika program dijalankan.
+8. Menembak payload dengan isi sebagai berikut:
+  1. Junk
+  2. Canary
+  3. Padding
+  4. POP RDI; RET
+  5. '/bin/sh'
+  6. System()
+  7. Profit
+
+Sedikit spoiler, kita bahkan belum sampai setengah jalan. Ini challenge terpanjang yang pernah saya tulis write-up nya, karena banyak yang perlu dijelaskan.
